@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Site Sync Checker
  * Description: Compare pages between a source site feed and the current site to find missing pages.
- * Version: 1.0.6
+ * Version: 1.0.9
  * Author: CI Data Works
  * Text Domain: site-sync-checker
  */
@@ -476,7 +476,7 @@ class CI_Site_Sync_Checker_Plugin {
 
         $last_fatal = get_option('ssc_last_fatal_error', array());
         $debug_items = array(
-            'Plugin version' => '1.0.6',
+            'Plugin version' => '1.0.9',
             'WordPress version' => isset($wp_version) ? $wp_version : '',
             'PHP version' => PHP_VERSION,
             'Home URL' => home_url('/'),
@@ -589,12 +589,69 @@ class CI_Site_Sync_Checker_Plugin {
         $post_types = get_post_types(array('public' => true), 'names');
 
         if (!is_array($post_types)) {
-            return array('post', 'page');
+            $post_types = array('post' => 'post', 'page' => 'page');
+        }
+
+        foreach ($this->get_acf_post_types() as $acf_post_type) {
+            $post_types[$acf_post_type] = $acf_post_type;
         }
 
         unset($post_types['attachment']);
+        unset($post_types['acf-field-group']);
+        unset($post_types['acf-field']);
+        unset($post_types['acf-post-type']);
+        unset($post_types['acf-taxonomy']);
 
         return array_values(array_map('sanitize_key', $post_types));
+    }
+
+    private function get_acf_post_types() {
+        global $wpdb;
+
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT post_name, post_title, post_content FROM {$wpdb->posts} WHERE post_type = %s AND post_status = %s",
+            'acf-post-type',
+            'publish'
+        ));
+        $post_types = array();
+
+        foreach ($rows as $row) {
+            $name = '';
+            $content = is_string($row->post_content) ? trim($row->post_content) : '';
+
+            if ($content !== '') {
+                $decoded = json_decode($content, true);
+
+                if (!is_array($decoded) && function_exists('maybe_unserialize')) {
+                    $decoded = maybe_unserialize($content);
+                }
+
+                if (is_array($decoded)) {
+                    foreach (array('post_type', 'name', 'key') as $field) {
+                        if (!empty($decoded[$field]) && is_string($decoded[$field])) {
+                            $name = $decoded[$field];
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if ($name === '' && !empty($row->post_name)) {
+                $name = $row->post_name;
+            }
+
+            if ($name === '' && !empty($row->post_title)) {
+                $name = $row->post_title;
+            }
+
+            $name = sanitize_key($name);
+
+            if ($name !== '') {
+                $post_types[$name] = $name;
+            }
+        }
+
+        return array_values($post_types);
     }
 
     private function normalize_path($value, $base_url = '') {
