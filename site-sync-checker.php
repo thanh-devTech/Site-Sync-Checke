@@ -84,6 +84,7 @@ class CI_Site_Sync_Checker_Plugin {
             'offset' => $offset,
             'total' => $total,
             'has_more' => $total > ($offset + $limit),
+            'post_types' => $this->get_sync_post_types(),
             'pages' => $this->get_site_pages($limit, $offset),
         ));
     }
@@ -252,7 +253,7 @@ class CI_Site_Sync_Checker_Plugin {
                     localCount = parseInt(data.total, 10) || 0;
                     (data.pages || []).forEach(function(page) {
                         if (page.path) {
-                            localPaths[page.path] = true;
+                            localPaths[(page.post_type || 'page') + '|' + page.path] = true;
                         }
                     });
 
@@ -280,7 +281,7 @@ class CI_Site_Sync_Checker_Plugin {
                     (data.pages || []).forEach(function(page) {
                         sourceCount++;
 
-                        if (page.path && !localPaths[page.path]) {
+                        if (page.path && !localPaths[(page.post_type || 'page') + '|' + page.path]) {
                             missing.push(page);
                         }
                     });
@@ -302,9 +303,10 @@ class CI_Site_Sync_Checker_Plugin {
                 if (!missing.length) {
                     html += '<div class="notice notice-success"><p>No missing pages found.</p></div>';
                 } else {
-                    html += '<table class="widefat striped"><thead><tr><th>Title</th><th>Path</th><th>Source URL</th></tr></thead><tbody>';
+                    html += '<p><button type="button" class="button button-secondary" id="ssc_download_missing_txt">Download missing links TXT</button></p>';
+                    html += '<table class="widefat striped"><thead><tr><th>Type</th><th>Title</th><th>Path</th><th>Source URL</th></tr></thead><tbody>';
                     missing.forEach(function(page) {
-                        html += '<tr><td>' + escapeHtml(page.title) + '</td><td><code>' + escapeHtml(page.path) + '</code></td><td>';
+                        html += '<tr><td><code>' + escapeHtml(page.post_type || 'page') + '</code></td><td>' + escapeHtml(page.title) + '</td><td><code>' + escapeHtml(page.path) + '</code></td><td>';
 
                         if (page.url) {
                             html += '<a href="' + escapeHtml(page.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(page.url) + '</a>';
@@ -317,6 +319,23 @@ class CI_Site_Sync_Checker_Plugin {
 
                 result.innerHTML = html;
                 submitButton.disabled = false;
+
+                if (missing.length) {
+                    document.getElementById('ssc_download_missing_txt').addEventListener('click', function() {
+                        var lines = missing.map(function(page) {
+                            return page.url || page.path || '';
+                        }).filter(Boolean);
+                        var blob = new Blob([lines.join("\n") + "\n"], {type: 'text/plain;charset=utf-8'});
+                        var link = document.createElement('a');
+
+                        link.href = URL.createObjectURL(blob);
+                        link.download = 'missing-site-sync-links.txt';
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(link.href);
+                    });
+                }
             }
 
             form.addEventListener('submit', function(event) {
@@ -362,6 +381,7 @@ class CI_Site_Sync_Checker_Plugin {
                 'next_offset' => $offset + $limit,
                 'has_more' => $total > ($offset + $limit),
                 'pages' => $this->get_site_pages($limit, $offset),
+                'post_types' => $this->get_sync_post_types(),
             ));
         }
 
@@ -437,6 +457,7 @@ class CI_Site_Sync_Checker_Plugin {
 
             $pages[] = array(
                 'title' => isset($page['title']) ? wp_strip_all_tags((string) $page['title']) : '',
+                'post_type' => isset($page['post_type']) ? sanitize_key((string) $page['post_type']) : 'page',
                 'path' => $path,
                 'url' => isset($page['url']) ? esc_url_raw($page['url']) : '',
             );
@@ -455,12 +476,13 @@ class CI_Site_Sync_Checker_Plugin {
 
         $last_fatal = get_option('ssc_last_fatal_error', array());
         $debug_items = array(
-            'Plugin version' => '1.0.5',
+            'Plugin version' => '1.0.6',
             'WordPress version' => isset($wp_version) ? $wp_version : '',
             'PHP version' => PHP_VERSION,
             'Home URL' => home_url('/'),
             'Site URL' => site_url('/'),
             'REST feed URL' => function_exists('rest_url') ? rest_url($this->rest_namespace . '/pages') : home_url('/?rest_route=/' . $this->rest_namespace . '/pages'),
+            'Synced post types' => implode(', ', $this->get_sync_post_types()),
             'WP_DEBUG' => defined('WP_DEBUG') && WP_DEBUG ? 'true' : 'false',
             'WP_DEBUG_DISPLAY' => defined('WP_DEBUG_DISPLAY') && WP_DEBUG_DISPLAY ? 'true' : 'false',
             'WP_DEBUG_LOG' => defined('WP_DEBUG_LOG') && WP_DEBUG_LOG ? 'true' : 'false',
@@ -511,27 +533,32 @@ class CI_Site_Sync_Checker_Plugin {
 
         $limit = (int) $limit;
         $offset = (int) $offset;
+        $post_types = $this->get_sync_post_types();
 
         if ($limit < 1) {
             $limit = $this->batch_size;
         }
 
+        if (empty($post_types)) {
+            return array();
+        }
+
+        $placeholders = implode(',', array_fill(0, count($post_types), '%s'));
+        $query_args = array_merge($post_types, array('publish', $limit, $offset));
         $pages = $wpdb->get_results($wpdb->prepare(
-            "SELECT ID, post_title, post_name, post_modified_gmt FROM {$wpdb->posts} WHERE post_type = %s AND post_status = %s ORDER BY menu_order ASC, post_title ASC LIMIT %d OFFSET %d",
-            'page',
-            'publish',
-            $limit,
-            $offset
+            "SELECT ID, post_title, post_name, post_type, post_modified_gmt FROM {$wpdb->posts} WHERE post_type IN ($placeholders) AND post_status = %s ORDER BY post_type ASC, menu_order ASC, post_title ASC LIMIT %d OFFSET %d",
+            $query_args
         ));
         $items = array();
 
         foreach ($pages as $page) {
-            $path = $this->normalize_path(get_page_uri((int) $page->ID));
-            $url = home_url($path === '' ? '/' : '/' . $path . '/');
+            $url = get_permalink((int) $page->ID);
+            $path = $this->normalize_path($url, home_url('/'));
             $items[] = array(
                 'id' => (int) $page->ID,
                 'title' => wp_strip_all_tags($page->post_title),
                 'slug' => $page->post_name,
+                'post_type' => $page->post_type,
                 'path' => $path,
                 'url' => $url,
                 'modified' => $page->post_modified_gmt,
@@ -543,12 +570,31 @@ class CI_Site_Sync_Checker_Plugin {
 
     private function count_site_pages() {
         global $wpdb;
+        $post_types = $this->get_sync_post_types();
+
+        if (empty($post_types)) {
+            return 0;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($post_types), '%s'));
+        $query_args = array_merge($post_types, array('publish'));
 
         return (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(ID) FROM {$wpdb->posts} WHERE post_type = %s AND post_status = %s",
-            'page',
-            'publish'
+            "SELECT COUNT(ID) FROM {$wpdb->posts} WHERE post_type IN ($placeholders) AND post_status = %s",
+            $query_args
         ));
+    }
+
+    private function get_sync_post_types() {
+        $post_types = get_post_types(array('public' => true), 'names');
+
+        if (!is_array($post_types)) {
+            return array('post', 'page');
+        }
+
+        unset($post_types['attachment']);
+
+        return array_values(array_map('sanitize_key', $post_types));
     }
 
     private function normalize_path($value, $base_url = '') {
