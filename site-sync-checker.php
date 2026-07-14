@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Site Sync Checker
  * Description: Compare pages between a source site feed and the current site to find missing pages.
- * Version: 1.0.9
+ * Version: 1.0.12
  * Author: CI Data Works
  * Text Domain: site-sync-checker
  */
@@ -253,7 +253,7 @@ class CI_Site_Sync_Checker_Plugin {
                     localCount = parseInt(data.total, 10) || 0;
                     (data.pages || []).forEach(function(page) {
                         if (page.path) {
-                            localPaths[(page.post_type || 'page') + '|' + page.path] = true;
+                            localPaths[page.path] = true;
                         }
                     });
 
@@ -281,7 +281,7 @@ class CI_Site_Sync_Checker_Plugin {
                     (data.pages || []).forEach(function(page) {
                         sourceCount++;
 
-                        if (page.path && !localPaths[(page.post_type || 'page') + '|' + page.path]) {
+                        if (page.path && !localPaths[page.path]) {
                             missing.push(page);
                         }
                     });
